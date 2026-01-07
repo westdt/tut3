@@ -1,7 +1,8 @@
-# ut3 - Ultimate Tic-Tac-Toe
+# tut3
+tut3 (pronunced "tute") - Terminal Ultimate Tic-Tac-Toe
 
 ## Overview
-A simple [Ultimate Tic-Tac-Toe](https://en.wikipedia.org/wiki/Ultimate_tic-tac-toe) game that I programmed in [Rust](https://rust-lang.org).
+A simple terminal-based [Ultimate Tic-Tac-Toe](https://en.wikipedia.org/wiki/Ultimate_tic-tac-toe) game that I programmed in [Rust](https://rust-lang.org).
 
 It maybe doesn't have the cleanest code in the world but it functions correctly, so I'm satisfied with it.
 
@@ -27,7 +28,7 @@ There might be bugs in this. Please submit an issue if you find any bugs, I am h
 
 If you see weird characters on the screen, it is probably due to the ANSI colors not working correctly. I think these work on PowerShell and on most Linux/Unix terminals, but I am only on Mac, so if not, please let me know and I can create an alternate solution.
 
-Currently there are no dependencies. If you have Rust installed, you can simply download the project and run `cargo run`.
+Currently there are no dependencies. If you have Rust installed, you can simply download the project and run `cargo run --release`.
 
 ## Future Features
 - [x] Draws (I somehow entirely forgot to code this originally)

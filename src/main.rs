@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Display, format},
+    fmt::{Display},
     io,
     process::exit,
 };

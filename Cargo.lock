@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "ut3"
+name = "tut3"
 version = "0.1.0"
