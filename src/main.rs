@@ -1,8 +1,4 @@
-use std::{
-    fmt::{Display},
-    io,
-    process::exit,
-};
+use std::{fmt::Display, io};
 
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
@@ -51,6 +47,163 @@ impl Display for Piece {
 
 type Subgame = [[Piece; 3]; 3];
 type Game = [[Subgame; 3]; 3];
+
+struct GameState<A: Player, B: Player> {
+    active: Option<(usize, usize)>,
+    message: Option<String>,
+    game: Game,
+    turn: Piece,
+    player_1: A,
+    player_2: B,
+}
+
+impl<A: Player, B: Player> GameState<A, B> {
+    fn new() -> Self {
+        Self {
+            active: None,
+            message: None,
+            game: new_game(),
+            turn: Piece::X,
+            player_1: A::new(),
+            player_2: B::new(),
+        }
+    }
+
+    fn print(&self) {
+        print_game(&self.game, &self.active);
+    }
+
+    fn turn(&mut self) {
+        loop {
+            if self.message.is_some() {
+                println!("{}", self.message.as_ref().unwrap());
+                self.message = None;
+            }
+
+            if self.turn == Piece::None {
+                self.turn = Piece::X
+            }
+
+            let pos = if self.turn == Piece::X {
+                self.player_1.play(&self.game, &self.turn, self.active)
+            } else {
+                self.player_2.play(&self.game, &self.turn, self.active)
+            };
+
+            if pos.is_none() {
+                self.message = Some(format!(
+                    "Invalid move! That position is not within the game boundaries!"
+                ));
+                continue;
+            }
+
+            let (x, y) = pos.unwrap();
+            let x0 = x % 3;
+            let y0 = y % 3;
+            let x1 = x / 3;
+            let y1 = y / 3;
+
+            let won = subgame_won(&self.game[x1][y1]);
+            if won != Piece::None {
+                self.message = Some(format!(
+                    "Invalid move! That position is within a game that has already been won!"
+                ));
+                continue;
+            }
+
+            if subgame_is_draw(&self.game[x1][y1]) {
+                self.message = Some(format!(
+                    "Invalid move! That position is within a game that has already been drawn!"
+                ));
+                continue;
+            }
+
+            if self.active.is_some() {
+                let (ax, ay) = self.active.unwrap();
+                if x1 != ax || y1 != ay {
+                    self.message = Some(format!(
+                        "Invalid move! That position is not within the current active game!"
+                    ));
+                    continue;
+                }
+            }
+
+            let piece = self.game[x1][y1][x0][y0];
+            if piece != Piece::None {
+                self.message = Some(format!(
+                    "Invalid move! There is already a piece at that position!"
+                ));
+                continue;
+            }
+
+            self.game[x1][y1][x0][y0] = self.turn.clone();
+
+            let won = subgame_won(&self.game[x0][y0]);
+            if won == Piece::None && !subgame_is_draw(&self.game[x0][y0]) {
+                self.active = Some((x0, y0));
+            } else {
+                self.active = None;
+            }
+
+            if self.is_complete() {
+                self.active = None;
+                break;
+            }
+
+            if self.turn == Piece::X {
+                self.turn = Piece::O;
+            } else {
+                self.turn = Piece::X;
+            }
+            break;
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.is_draw() && self.won() != Piece::None
+    }
+
+    fn is_draw(&self) -> bool {
+        game_is_draw(&self.game)
+    }
+
+    fn won(&self) -> Piece {
+        game_won(&self.game)
+    }
+}
+
+trait Player {
+    fn new() -> Self;
+    fn play(&self, game: &Game, turn: &Piece, active: Option<(usize, usize)>) -> Option<(usize, usize)>;
+}
+
+struct Human;
+impl Player for Human {
+    fn new() -> Self {
+        Self
+    }
+
+    fn play(&self, _game: &Game, turn: &Piece, active: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        println!(
+            "It's {}'s turn! You can move in any open square between {} and {}",
+            turn,
+            pos_as_string(&move_min(&active)),
+            pos_as_string(&move_max(&active))
+        );
+
+        // Create a mutable string to store the input
+        let mut input_text = String::new();
+
+        // Read the line from stdin, store it in input_text, and handle potential errors
+        io::stdin()
+            .read_line(&mut input_text)
+            .expect("Failed to read line");
+        input_text = input_text.trim().to_string();
+
+        let pos = string_as_pos(&input_text);
+        pos
+    }
+}
 
 fn new_empty_subgame() -> Subgame {
     [[Piece::None; 3]; 3]
@@ -130,7 +283,6 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
     }
     println!("   +---+---+---+ +---+---+---+ +---+---+---+");
     for y in 0..9 {
-        
         //print!("   |");
         let y0 = y % 3;
         let y1 = y / 3;
@@ -139,7 +291,7 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
         } else {
             print!("   |");
         }
-            
+
         for x in 0..9 {
             let x0 = x % 3;
             let x1 = x / 3;
@@ -286,105 +438,15 @@ fn string_as_pos(pos: &str) -> Option<(usize, usize)> {
 }
 
 fn main() {
-    let mut active = None;
-    let mut turn = Piece::X;
-    let mut game = new_game();
-    let mut message = None;
+    let mut game = GameState::<Human, Human>::new();
+    while !game.is_complete() {
+        game.print();
+        game.turn();
+    }
 
-    loop {
-        print_game(&game, &active);
-        if message.is_some() {
-            println!("{}", message.unwrap());
-            message = None;
-        }
-        println!(
-            "It's {turn}'s turn! You can move in any open square between {} and {}",
-            pos_as_string(&move_min(&active)),
-            pos_as_string(&move_max(&active))
-        );
-
-        // Create a mutable string to store the input
-        let mut input_text = String::new();
-
-        // Read the line from stdin, store it in input_text, and handle potential errors
-        io::stdin()
-            .read_line(&mut input_text)
-            .expect("Failed to read line");
-        input_text = input_text.trim().to_string();
-
-        let pos = string_as_pos(&input_text);
-
-        if pos.is_none() {
-            message = Some(format!(
-                "Invalid move! That position ({input_text}) is not within the game boundaries!"
-            ));
-            continue;
-        }
-
-        let (x, y) = pos.unwrap();
-        let x0 = x % 3;
-        let y0 = y % 3;
-        let x1 = x / 3;
-        let y1 = y / 3;
-
-        let won = subgame_won(&game[x1][y1]);
-        if won != Piece::None {
-            message = Some(format!(
-                "Invalid move! That position ({input_text}) is within a game that has already been won!"
-            ));
-            continue;
-        }
-
-        if subgame_is_draw(&game[x1][y1]) {
-            message = Some(format!(
-                "Invalid move! That position ({input_text}) is within a game that has already been drawn!"
-            ));
-            continue;
-        }
-
-        if active.is_some() {
-            let (ax, ay) = active.unwrap();
-            if x1 != ax || y1 != ay {
-                message = Some(format!(
-                    "Invalid move! That position ({input_text}) is not within the current active game!"
-                ));
-                continue;
-            }
-        }
-
-        let piece = game[x1][y1][x0][y0];
-        if piece != Piece::None {
-            message = Some(format!(
-                "Invalid move! There is already a piece at that position ({input_text})!"
-            ));
-            continue;
-        }
-
-        game[x1][y1][x0][y0] = turn.clone();
-
-        let won = subgame_won(&game[x0][y0]);
-        if won == Piece::None && !subgame_is_draw(&game[x0][y0]) {
-            active = Some((x0, y0));
-        } else {
-            active = None;
-        }
-
-        if game_is_draw(&game) {
-            print_game(&game, &None);
-
-            println!("It's a draw!");
-            exit(0);
-        } else if game_won(&game) != Piece::None {
-            print_game(&game, &None);
-
-            println!("{turn} wins!");
-            exit(0);
-        }
-
-        if turn == Piece::X {
-            turn = Piece::O;
-        } else {
-            turn = Piece::X;
-        }
+    if game.is_draw() {
+        println!("It's a draw!");
+    } else {
+        println!("{} wins!", game.turn);
     }
 }
