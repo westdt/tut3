@@ -1,6 +1,3 @@
-# tut3
-tut3 (pronunced "tute") - Terminal Ultimate Tic-Tac-Toe
-
 ## Overview
 A simple terminal-based [Ultimate Tic-Tac-Toe](https://en.wikipedia.org/wiki/Ultimate_tic-tac-toe) game that I programmed in [Rust](https://rust-lang.org).
 
