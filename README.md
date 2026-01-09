@@ -3,6 +3,24 @@ A simple terminal-based [Ultimate Tic-Tac-Toe](https://en.wikipedia.org/wiki/Ult
 
 It maybe doesn't have the cleanest code in the world but it functions correctly, so I'm satisfied with it.
 
+## How to Run
+To play with two players, simply run `cargo run --release`. See below for the options for competing against bots. Note that X always plays first.
+```
+# These are the options. The first one passed will be play as X and the second one with be O.
+# - human
+# - random
+# - smart
+
+# play as X against a "random" bot
+cargo run --release human random
+
+# play as O against a "smart" bot
+cargo run --release smart human
+
+# pit two "smart" bots against each other
+cargo run --release smart smart
+```
+
 ## How to Play
 <img src="screenshots/example_game.png" width="50%">
 
@@ -25,12 +43,10 @@ There might be bugs in this. Please submit an issue if you find any bugs, I am h
 
 If you see weird characters on the screen, it is probably due to the ANSI colors not working correctly. I think these work on PowerShell and on most Linux/Unix terminals, but I am only on Mac, so if not, please let me know and I can create an alternate solution.
 
-Currently there are no dependencies. If you have Rust installed, you can simply download the project and run `cargo run --release`.
-
 ## Future Features
 - [x] Draws (I somehow entirely forgot to code this originally)
 - [x] Minor TUI changes to make it more clear what moves are available
-- [ ] Primitive AI so people can play alone
+- [x] Primitive AI so people can play alone
 - [ ] Simple LAN multiplayer mode
 
 ## Pronounciation

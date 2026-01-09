@@ -1,11 +1,12 @@
+#![allow(dead_code)]
 use std::{
-    cmp::{max, min},
-    collections::VecDeque,
     env,
     fmt::Display,
-    io, isize,
+    io::{self, Cursor, Read},
+    isize,
+    net::{IpAddr, UdpSocket},
     rc::Rc,
-    sync::Arc,
+    str::FromStr,
 };
 
 const RESET: &str = "\x1b[0m";
@@ -36,10 +37,27 @@ enum Piece {
 
 impl Piece {
     fn other(&self) -> Piece {
-        match  self {
+        match self {
             Piece::None => Piece::None,
             Piece::X => Piece::O,
             Piece::O => Piece::X,
+        }
+    }
+
+    fn as_u8(&self) -> u8 {
+        match self {
+            Piece::None => 0,
+            Piece::X => 1,
+            Piece::O => 2,
+        }
+    }
+
+    fn from_u8(u8: u8) -> Piece {
+        match u8 {
+            0 => Piece::None,
+            1 => Piece::X,
+            2 => Piece::O,
+            _ => panic!(),
         }
     }
 }
@@ -78,6 +96,55 @@ struct GameState {
 }
 
 impl GameState {
+    fn update_to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        match self.active {
+            Some((x, y)) => bytes.extend([2, x as u8, y as u8]),
+            None => bytes.push(0),
+        };
+        bytes.push(self.turn.as_u8());
+
+        let mut positions = Vec::new();
+        for x1 in 0..3 {
+            for y1 in 0..3 {
+                for x0 in 0..3 {
+                    for y0 in 0..3 {
+                        positions.push(self.game[x1][y1][x0][y0].as_u8());
+                    }
+                }
+            }
+        }
+
+        bytes
+    }
+
+    fn update_from_bytes(&mut self, bytes: &[u8]) {
+        let mut cursor = Cursor::new(bytes);
+        let mut buf = [0u8; 1];
+        cursor.read_exact(&mut buf).unwrap();
+        if buf[0] > 0 {
+            let mut buf = [0u8; 2];
+            cursor.read_exact(&mut buf).unwrap();
+            self.active = Some((buf[0] as usize, buf[1] as usize));
+        } else {
+            self.active = None;
+        }
+
+        cursor.read_exact(&mut buf).unwrap();
+        self.turn = Piece::from_u8(buf[0]);
+
+        for x1 in 0..3 {
+            for y1 in 0..3 {
+                for x0 in 0..3 {
+                    for y0 in 0..3 {
+                        cursor.read_exact(&mut buf).unwrap();
+                        self.game[x1][y1][x0][y0] = Piece::from_u8(buf[0]);
+                    }
+                }
+            }
+        }
+    }
+
     fn new(player_1: Player, player_2: Player) -> Self {
         Self {
             active: None,
@@ -146,7 +213,7 @@ impl GameState {
         return true;
     }
 
-    fn turn(&mut self) {
+    fn turn(&mut self) -> Option<(usize, usize)> {
         loop {
             if self.message.is_some() {
                 println!("{}", self.message.as_ref().unwrap());
@@ -220,7 +287,7 @@ impl GameState {
 
             if self.is_complete() {
                 self.active = None;
-                break;
+                return pos;
             }
 
             if self.turn == Piece::X {
@@ -228,7 +295,7 @@ impl GameState {
             } else {
                 self.turn = Piece::X;
             }
-            break;
+            return pos;
         }
     }
 
@@ -246,9 +313,6 @@ impl GameState {
 }
 
 trait PlayerTrait {
-    fn new() -> Rc<Self>
-    where
-        Self: Sized;
     fn play(
         &self,
         game: &Game,
@@ -260,10 +324,6 @@ trait PlayerTrait {
 #[derive(Clone)]
 struct Human;
 impl PlayerTrait for Human {
-    fn new() -> Rc<Self> {
-        Rc::new(Self)
-    }
-
     fn play(
         &self,
         _game: &Game,
@@ -294,10 +354,6 @@ impl PlayerTrait for Human {
 #[derive(Clone)]
 struct Random;
 impl PlayerTrait for Random {
-    fn new() -> Rc<Self> {
-        Rc::new(Self)
-    }
-
     fn play(
         &self,
         _game: &Game,
@@ -310,7 +366,8 @@ impl PlayerTrait for Random {
     }
 }
 
-const MAX_DEPTH: usize = 7;
+const WIN_SCORE: isize = 1_000_000;
+const MAX_DEPTH: usize = 8;
 struct Minimax;
 
 impl Minimax {
@@ -324,15 +381,14 @@ impl Minimax {
                 let subgame_won = subgame_won(&subgame);
                 if subgame_won == Piece::None {
                     if subgame_is_draw(&subgame) {
-                        // println!("-1");
-                        points -= 1;
+                        points -= 10;
+                    } else {
+                        points += subgame_score(&subgame, me);
                     }
                 } else if subgame_won == *me {
-                    // println!("+10");
-                    points += 10;
+                    points += 100;
                 } else {
-                    // println!("-10");
-                    points -= 10;
+                    points -= 100;
                 }
             }
         }
@@ -340,22 +396,24 @@ impl Minimax {
         let game_won = game_won(&game);
         if game_won == Piece::None {
         } else if game_won == *me {
-            // println!("+100");
-            points += 100;
+            points += WIN_SCORE;
         } else {
-            // println!("-100");
-            points -= 100;
+            points -= WIN_SCORE;
         }
 
         points
     }
 
-    fn play_inner(depth: usize, game: &GameState, me: Piece) -> isize {
-        let eval = Self::eval(&game.game, &me);
-
+    fn play_inner(
+        depth: usize,
+        game: &GameState,
+        me: Piece,
+        mut alpha: isize,
+        beta: isize,
+    ) -> isize {
         // terminal or cutoff
-        if depth >= MAX_DEPTH || game_won(&game.game) != Piece::None || game_is_draw(&game.game) {
-            return eval;
+        if depth >= MAX_DEPTH || game_won(&game.game) != Piece::None {
+            return Self::eval(&game.game, &me);
         }
 
         let mut best = isize::MIN;
@@ -380,8 +438,22 @@ impl Minimax {
                             let mut next = game.clone();
 
                             if next.manual_turn(x1 * 3 + x0, y1 * 3 + y0) {
-                                let score = -Self::play_inner(depth + 1, &next, me);
+                                // match game_won(&next.game) {
+                                //     p if p == me => return WIN_SCORE - depth as isize,
+                                //     p if p != Piece::None => return -WIN_SCORE + depth as isize,
+                                //     _ => {}
+                                // }
+
+                                // NEGAMAX RECURSION
+                                let score = -Self::play_inner(depth + 1, &next, me, -beta, -alpha);
+
                                 best = best.max(score);
+                                alpha = alpha.max(best);
+
+                                // ✂️ BETA CUTOFF
+                                if alpha >= beta {
+                                    return alpha;
+                                }
                             }
                         }
                     }
@@ -394,18 +466,15 @@ impl Minimax {
 }
 
 impl PlayerTrait for Minimax {
-    fn new() -> Rc<Self> {
-        Rc::new(Self)
-    }
-
     fn play(
         &self,
         game: &Game,
         turn: &Piece,
         active: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
-        let eval = Self::eval(game, turn);
-        println!("Current score: {eval}");
+        println!("Thinking...");
+        // let eval = Self::eval(game, turn);
+        // println!("Current score: {eval}");
 
         let mut moves = Vec::new();
         for x1 in 0..3 {
@@ -433,13 +502,17 @@ impl PlayerTrait for Minimax {
         let mut bests = Vec::new();
         let mut highest_score = isize::MIN;
 
-        let game = GameState::new(Minimax::new(), Minimax::new());
+        let game_ = game;
+        let mut game = GameState::new(Rc::new(Minimax), Rc::new(Minimax));
+        game.game = *game_;
+        game.active = active;
+        game.turn = *turn;
         for (x1, y1, x0, y0) in moves.iter() {
             let mut game = game.clone();
 
             if game.manual_turn(x1 * 3 + x0, y1 * 3 + y0) {
-                let score = Self::play_inner(0, &game, *turn);
-                println!("{}: {}", pos_as_string(&(x1 * 3 + x0, y1 * 3 + y0)), score);
+                let score = Self::play_inner(0, &game, turn.other(), isize::MIN + 1, isize::MAX);
+                // println!("{}: {}", pos_as_string(&(x1 * 3 + x0, y1 * 3 + y0)), score);
 
                 if score > highest_score {
                     bests.clear();
@@ -466,6 +539,52 @@ impl PlayerTrait for Minimax {
     }
 }
 
+struct Local(IpAddr);
+impl PlayerTrait for Local {
+    fn play(
+        &self,
+        game: &Game,
+        turn: &Piece,
+        active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let game_ = game;
+        let mut game = GameState::new(Rc::new(Human), Rc::new(Human));
+        game.game = *game_;
+        game.active = active;
+        game.turn = *turn;
+
+        let pos = game.turn();
+        let update = game.update_to_bytes();
+
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0") {
+            socket
+                .send_to(&update, (self.0, 2003))
+                .expect("Failed to send game update");
+        } else {
+            panic!("Failed to bind socket")
+        }
+
+        pos
+    }
+}
+
+struct Remote(IpAddr);
+
+impl PlayerTrait for Remote {
+    fn play(
+        &self,
+        _game: &Game,
+        _turn: &Piece,
+        _active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        // if let Ok(socket) = UdpSocket::bind("0.0.0.0") {
+        //     socket.connect(addr)
+        // }
+
+        None
+    }
+}
+
 fn new_empty_subgame() -> Subgame {
     [[Piece::None; 3]; 3]
 }
@@ -484,6 +603,31 @@ fn subgame_won(subgame: &Subgame) -> Piece {
         }
     }
     Piece::None
+}
+
+fn subgame_score(subgame: &Subgame, me: &Piece) -> isize {
+    if me == &Piece::None {
+        return 0;
+    }
+
+    let mut score = 0;
+    for win in WINS {
+        let a = &subgame[win[0].0][win[0].1];
+        let b = &subgame[win[1].0][win[1].1];
+        let c = &subgame[win[2].0][win[2].1];
+        let all = [a, b, c];
+        let me_count = all.iter().filter(|piece| piece == &&me).count();
+        let them_count = all.iter().filter(|piece| piece == &&&me.other()).count();
+
+        if me_count == 2 && them_count == 0 {
+            score += 1;
+        }
+
+        if me_count == 0 && them_count == 2 {
+            score -= 1;
+        }
+    }
+    score
 }
 
 fn subgame_is_draw(subgame: &Subgame) -> bool {
@@ -568,7 +712,7 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
                 match (x0, y0) {
                     (0, 0) => print!(" {COLOR_X}╲{RESET} "),
                     (2, 0) => print!(" {COLOR_X}╱{RESET} "),
-                    (1, 1) => print!(" {COLOR_X}✕{RESET} "),
+                    (1, 1) => print!(" {COLOR_X}x{RESET} "),
                     (0, 2) => print!(" {COLOR_X}╱{RESET} "),
                     (2, 2) => print!(" {COLOR_X}╲{RESET} "),
                     _ => print!("   "),
@@ -579,6 +723,7 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
                     (1, 0) => print!(" {COLOR_O}-{RESET} "),
                     (2, 0) => print!(" {COLOR_O}╮{RESET} "),
                     (0, 1) => print!(" {COLOR_O}|{RESET} "),
+                    (1, 1) => print!(" {COLOR_O}o{RESET} "),
                     (2, 1) => print!(" {COLOR_O}|{RESET} "),
                     (0, 2) => print!(" {COLOR_O}╰{RESET} "),
                     (2, 2) => print!(" {COLOR_O}╯{RESET} "),
@@ -603,11 +748,7 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
         print!("|\n   ");
 
         if y < 8 {
-            if y % 3 != 2 {
-                print!("|");
-            } else {
-                print!("+");
-            }
+            print!("+");
             for x in 0..9 {
                 let x0 = x % 3;
                 let x1 = x / 3;
@@ -625,7 +766,20 @@ fn print_game(game: &Game, active: &Option<(usize, usize)>) {
                 if x0 == 2 && x1 < 2 {
                     print!("+ +");
                 } else {
-                    print!("+");
+                    if subgame_won(&game[x1][y1]) == Piece::None {
+                        print!("+");
+                    } else if subgame_won(&game[x1][y1]) == Piece::O {
+                        print!(" ");
+                    } else if subgame_won(&game[x1][y1]) == Piece::X {
+                        match (x0, y0) {
+                            (0, 0) => print!("{COLOR_X}╲{RESET}"),
+                            (1, 0) => print!("{COLOR_X}╱{RESET}"),
+                            (0, 1) => print!("{COLOR_X}╱{RESET}"),
+                            (1, 1) => print!("{COLOR_X}╲{RESET}"),
+                            (_, 2) => print!("+"),
+                            _ => print!(" "),
+                        }
+                    }
                 }
             }
             println!("");
@@ -700,26 +854,43 @@ fn string_as_pos(pos: &str) -> Option<(usize, usize)> {
 
 fn player_from_string(string: &str) -> Option<Player> {
     match string.to_lowercase().as_str() {
-        "human" => Some(Human::new()),
-        "random" => Some(Random::new()),
-        "smart" => Some(Minimax::new()),
-        _ => None,
+        "human" => Some(Rc::new(Human)),
+        "random" => Some(Rc::new(Random)),
+        "smart" => Some(Rc::new(Minimax)),
+        other => match IpAddr::from_str(other) {
+            Ok(addr) => Some(Rc::new(Remote(addr))),
+            Err(_) => None,
+        },
     }
 }
 
 fn main() {
-    let mut player_1: Player = Human::new();
-    let mut player_2: Player = Human::new();
+    let mut player_1: Player = Rc::new(Human);
+    let mut player_2: Player = Rc::new(Human);
 
     let mut args = env::args();
     args.next();
 
     if let Some(next) = args.next() {
-        player_1 = player_from_string(&next).unwrap();
-    }
+        if let Ok(addr) = IpAddr::from_str(&next) {
+            player_1 = match args.next().unwrap().as_str() {
+                "local" => Rc::new(Local(addr)),
+                "remote" => Rc::new(Remote(addr)),
+                _ => panic!("Must be either 'local' or 'remote'"),
+            };
 
-    if let Some(next) = args.next() {
-        player_2 = player_from_string(&next).unwrap();
+            player_2 = match args.next().unwrap().as_str() {
+                "local" => Rc::new(Local(addr)),
+                "remote" => Rc::new(Remote(addr)),
+                _ => panic!("Must be either 'local' or 'remote'"),
+            };
+        } else {
+            player_1 = player_from_string(&next).unwrap();
+
+            if let Some(next) = args.next() {
+                player_2 = player_from_string(&next).unwrap();
+            }
+        }
     }
 
     let mut game = GameState::new(player_1, player_2);
@@ -728,6 +899,7 @@ fn main() {
         game.turn();
     }
 
+    game.print();
     if game.is_draw() {
         println!("It's a draw!");
     } else {
