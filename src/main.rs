@@ -511,7 +511,7 @@ impl PlayerTrait for Minimax {
             let mut game = game.clone();
 
             if game.manual_turn(x1 * 3 + x0, y1 * 3 + y0) {
-                let score = Self::play_inner(0, &game, turn.other(), isize::MIN + 1, isize::MAX);
+                let score = Self::play_inner(0, &game, *turn, isize::MIN + 1, isize::MAX);
                 // println!("{}: {}", pos_as_string(&(x1 * 3 + x0, y1 * 3 + y0)), score);
 
                 if score > highest_score {
