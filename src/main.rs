@@ -1,4 +1,12 @@
-use std::{fmt::Display, io};
+use std::{
+    cmp::{max, min},
+    collections::VecDeque,
+    env,
+    fmt::Display,
+    io, isize,
+    rc::Rc,
+    sync::Arc,
+};
 
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
@@ -26,6 +34,16 @@ enum Piece {
     O,
 }
 
+impl Piece {
+    fn other(&self) -> Piece {
+        match  self {
+            Piece::None => Piece::None,
+            Piece::X => Piece::O,
+            Piece::O => Piece::X,
+        }
+    }
+}
+
 impl Display for Piece {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -47,30 +65,85 @@ impl Display for Piece {
 
 type Subgame = [[Piece; 3]; 3];
 type Game = [[Subgame; 3]; 3];
+type Player = Rc<dyn PlayerTrait>;
 
-struct GameState<A: Player, B: Player> {
+#[derive(Clone)]
+struct GameState {
     active: Option<(usize, usize)>,
     message: Option<String>,
     game: Game,
     turn: Piece,
-    player_1: A,
-    player_2: B,
+    player_1: Player,
+    player_2: Player,
 }
 
-impl<A: Player, B: Player> GameState<A, B> {
-    fn new() -> Self {
+impl GameState {
+    fn new(player_1: Player, player_2: Player) -> Self {
         Self {
             active: None,
             message: None,
             game: new_game(),
             turn: Piece::X,
-            player_1: A::new(),
-            player_2: B::new(),
+            player_1,
+            player_2,
         }
     }
 
     fn print(&self) {
         print_game(&self.game, &self.active);
+    }
+
+    fn manual_turn(&mut self, x: usize, y: usize) -> bool {
+        if self.turn == Piece::None {
+            self.turn = Piece::X
+        }
+
+        let x0 = x % 3;
+        let y0 = y % 3;
+        let x1 = x / 3;
+        let y1 = y / 3;
+
+        let won = subgame_won(&self.game[x1][y1]);
+        if won != Piece::None {
+            return false;
+        }
+
+        if subgame_is_draw(&self.game[x1][y1]) {
+            return false;
+        }
+
+        if self.active.is_some() {
+            let (ax, ay) = self.active.unwrap();
+            if x1 != ax || y1 != ay {
+                return false;
+            }
+        }
+
+        let piece = self.game[x1][y1][x0][y0];
+        if piece != Piece::None {
+            return false;
+        }
+
+        self.game[x1][y1][x0][y0] = self.turn.clone();
+
+        let won = subgame_won(&self.game[x0][y0]);
+        if won == Piece::None && !subgame_is_draw(&self.game[x0][y0]) {
+            self.active = Some((x0, y0));
+        } else {
+            self.active = None;
+        }
+
+        if self.is_complete() {
+            self.active = None;
+            return true;
+        }
+
+        if self.turn == Piece::X {
+            self.turn = Piece::O;
+        } else {
+            self.turn = Piece::X;
+        }
+        return true;
     }
 
     fn turn(&mut self) {
@@ -160,7 +233,7 @@ impl<A: Player, B: Player> GameState<A, B> {
     }
 
     fn is_complete(&self) -> bool {
-        self.is_draw() && self.won() != Piece::None
+        self.is_draw() || self.won() != Piece::None
     }
 
     fn is_draw(&self) -> bool {
@@ -172,18 +245,31 @@ impl<A: Player, B: Player> GameState<A, B> {
     }
 }
 
-trait Player {
-    fn new() -> Self;
-    fn play(&self, game: &Game, turn: &Piece, active: Option<(usize, usize)>) -> Option<(usize, usize)>;
+trait PlayerTrait {
+    fn new() -> Rc<Self>
+    where
+        Self: Sized;
+    fn play(
+        &self,
+        game: &Game,
+        turn: &Piece,
+        active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)>;
 }
 
+#[derive(Clone)]
 struct Human;
-impl Player for Human {
-    fn new() -> Self {
-        Self
+impl PlayerTrait for Human {
+    fn new() -> Rc<Self> {
+        Rc::new(Self)
     }
 
-    fn play(&self, _game: &Game, turn: &Piece, active: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    fn play(
+        &self,
+        _game: &Game,
+        turn: &Piece,
+        active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
         println!(
             "It's {}'s turn! You can move in any open square between {} and {}",
             turn,
@@ -202,6 +288,181 @@ impl Player for Human {
 
         let pos = string_as_pos(&input_text);
         pos
+    }
+}
+
+#[derive(Clone)]
+struct Random;
+impl PlayerTrait for Random {
+    fn new() -> Rc<Self> {
+        Rc::new(Self)
+    }
+
+    fn play(
+        &self,
+        _game: &Game,
+        _turn: &Piece,
+        _active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let x: u8 = rand::random();
+        let y: u8 = rand::random();
+        Some((x as usize % 9, y as usize % 9))
+    }
+}
+
+const MAX_DEPTH: usize = 7;
+struct Minimax;
+
+impl Minimax {
+    fn eval(game: &Game, me: &Piece) -> isize {
+        let mut points: isize = 0;
+
+        for x in 0..3 {
+            for y in 0..3 {
+                let subgame = game[x][y];
+
+                let subgame_won = subgame_won(&subgame);
+                if subgame_won == Piece::None {
+                    if subgame_is_draw(&subgame) {
+                        // println!("-1");
+                        points -= 1;
+                    }
+                } else if subgame_won == *me {
+                    // println!("+10");
+                    points += 10;
+                } else {
+                    // println!("-10");
+                    points -= 10;
+                }
+            }
+        }
+
+        let game_won = game_won(&game);
+        if game_won == Piece::None {
+        } else if game_won == *me {
+            // println!("+100");
+            points += 100;
+        } else {
+            // println!("-100");
+            points -= 100;
+        }
+
+        points
+    }
+
+    fn play_inner(depth: usize, game: &GameState, me: Piece) -> isize {
+        let eval = Self::eval(&game.game, &me);
+
+        // terminal or cutoff
+        if depth >= MAX_DEPTH || game_won(&game.game) != Piece::None || game_is_draw(&game.game) {
+            return eval;
+        }
+
+        let mut best = isize::MIN;
+
+        for x1 in 0..3 {
+            for y1 in 0..3 {
+                if subgame_won(&game.game[x1][y1]) != Piece::None
+                    || subgame_is_draw(&game.game[x1][y1])
+                {
+                    continue;
+                }
+
+                if let Some((x, y)) = game.active {
+                    if x1 != x || y1 != y {
+                        continue;
+                    }
+                }
+
+                for x0 in 0..3 {
+                    for y0 in 0..3 {
+                        if game.game[x1][y1][x0][y0] == Piece::None {
+                            let mut next = game.clone();
+
+                            if next.manual_turn(x1 * 3 + x0, y1 * 3 + y0) {
+                                let score = -Self::play_inner(depth + 1, &next, me);
+                                best = best.max(score);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        best
+    }
+}
+
+impl PlayerTrait for Minimax {
+    fn new() -> Rc<Self> {
+        Rc::new(Self)
+    }
+
+    fn play(
+        &self,
+        game: &Game,
+        turn: &Piece,
+        active: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let eval = Self::eval(game, turn);
+        println!("Current score: {eval}");
+
+        let mut moves = Vec::new();
+        for x1 in 0..3 {
+            for y1 in 0..3 {
+                if subgame_won(&game[x1][y1]) != Piece::None || subgame_is_draw(&game[x1][y1]) {
+                    continue;
+                }
+
+                if let Some((x, y)) = active {
+                    if !(x1 == x && y1 == y) {
+                        continue;
+                    }
+                }
+
+                for x0 in 0..3 {
+                    for y0 in 0..3 {
+                        if game[x1][y1][x0][y0] == Piece::None {
+                            moves.push((x1, y1, x0, y0));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut bests = Vec::new();
+        let mut highest_score = isize::MIN;
+
+        let game = GameState::new(Minimax::new(), Minimax::new());
+        for (x1, y1, x0, y0) in moves.iter() {
+            let mut game = game.clone();
+
+            if game.manual_turn(x1 * 3 + x0, y1 * 3 + y0) {
+                let score = Self::play_inner(0, &game, *turn);
+                println!("{}: {}", pos_as_string(&(x1 * 3 + x0, y1 * 3 + y0)), score);
+
+                if score > highest_score {
+                    bests.clear();
+                    bests.push((x1 * 3 + x0, y1 * 3 + y0));
+                    highest_score = score;
+                } else if score == highest_score {
+                    bests.push((x1 * 3 + x0, y1 * 3 + y0));
+                }
+            }
+        }
+
+        if bests.len() == 0 {
+            let rand: u32 = rand::random();
+            let rand = rand as usize % moves.len();
+            let (x1, y1, x0, y0) = moves[rand];
+
+            bests.push((x1 * 3 + x0, y1 * 3 + y0));
+        }
+
+        let rand: u32 = rand::random();
+        let rand = rand as usize % bests.len();
+
+        Some(bests[rand])
     }
 }
 
@@ -417,7 +678,7 @@ fn pos_as_string(pos: &(usize, usize)) -> String {
 }
 
 fn string_as_pos(pos: &str) -> Option<(usize, usize)> {
-    let mut chars = pos.chars().collect::<Vec<_>>();
+    let mut chars = pos.to_lowercase().chars().collect::<Vec<_>>();
     if chars.len() != 2 {
         return None;
     } else {
@@ -437,8 +698,31 @@ fn string_as_pos(pos: &str) -> Option<(usize, usize)> {
     }
 }
 
+fn player_from_string(string: &str) -> Option<Player> {
+    match string.to_lowercase().as_str() {
+        "human" => Some(Human::new()),
+        "random" => Some(Random::new()),
+        "smart" => Some(Minimax::new()),
+        _ => None,
+    }
+}
+
 fn main() {
-    let mut game = GameState::<Human, Human>::new();
+    let mut player_1: Player = Human::new();
+    let mut player_2: Player = Human::new();
+
+    let mut args = env::args();
+    args.next();
+
+    if let Some(next) = args.next() {
+        player_1 = player_from_string(&next).unwrap();
+    }
+
+    if let Some(next) = args.next() {
+        player_2 = player_from_string(&next).unwrap();
+    }
+
+    let mut game = GameState::new(player_1, player_2);
     while !game.is_complete() {
         game.print();
         game.turn();
